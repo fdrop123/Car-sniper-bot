@@ -1,5 +1,6 @@
 """
-Facebook Marketplace scraper using Playwright with login support.
+Facebook Marketplace scraper - skips login, goes straight to marketplace.
+FB blocks headless login so we browse as guest and scrape visible listings.
 """
 import asyncio
 import logging
@@ -30,15 +31,13 @@ def _session_exists():
 
 async def _do_login(page):
     if not FB_EMAIL or not FB_PASSWORD:
-        logger.warning("FB: No credentials — skipping login")
         return False
     try:
         logger.info("FB: Logging in...")
         await page.goto("https://www.facebook.com/login", timeout=60000, wait_until="domcontentloaded")
         await asyncio.sleep(6)
 
-        # Accept cookies
-        for sel in ["button:has-text('Accept all')", "button:has-text('Allow all cookies')", "[data-cookiebanner='accept_button']"]:
+        for sel in ["button:has-text('Accept all')", "button:has-text('Allow all cookies')"]:
             try:
                 btn = page.locator(sel).first
                 if await btn.is_visible(timeout=3000):
@@ -48,37 +47,32 @@ async def _do_login(page):
             except Exception:
                 pass
 
-        # Wait for either email field or already logged in
+        # Try to fill login - if field not visible, skip
         try:
             await page.wait_for_selector("#email", timeout=20000)
-        except Exception:
-            logger.info("FB: Email field not found - may already be logged in or blocked")
+            await page.fill("#email", FB_EMAIL)
+            await asyncio.sleep(1)
+            await page.fill("#pass", FB_PASSWORD)
+            await asyncio.sleep(1)
+            await page.click("[name='login']")
+            await page.wait_for_url(
+                lambda url: "facebook.com" in url and "login" not in url and "checkpoint" not in url,
+                timeout=30000,
+            )
+            logger.info("FB: Login successful")
+            return True
+        except Exception as e:
+            logger.warning(f"FB: Login form not available: {e}")
             return False
-
-        await page.fill("#email", FB_EMAIL)
-        await asyncio.sleep(1)
-        await page.fill("#pass", FB_PASSWORD)
-        await asyncio.sleep(1)
-        await page.click("[name='login']")
-        await page.wait_for_url(
-            lambda url: "facebook.com" in url and "login" not in url and "checkpoint" not in url,
-            timeout=30000,
-        )
-        logger.info("FB: Login successful")
-        return True
     except Exception as e:
-        logger.error(f"FB: Login failed: {e}")
+        logger.error(f"FB: Login error: {e}")
         return False
 
 async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_km=97):
-    try:
-        from playwright.async_api import async_playwright
-        from bs4 import BeautifulSoup
-    except ImportError:
-        logger.error("Playwright not installed")
-        return []
-
+    from playwright.async_api import async_playwright
+    from bs4 import BeautifulSoup
     listings = []
+
     search_url = (
         f"https://www.facebook.com/marketplace/luton/vehicles"
         f"?minPrice={min_price}&maxPrice={max_price}&minYear={min_year}"
@@ -103,6 +97,7 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
         await page.route("**/*.{png,jpg,jpeg,gif,webp,mp4,woff2}", lambda r: r.abort())
 
         try:
+            # Try login if no session
             if not _session_exists() and FB_EMAIL:
                 if await _do_login(page):
                     state = await context.storage_state()
@@ -110,26 +105,28 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                         json.dump(state, f)
                     logger.info("FB: Session saved")
 
+            # Go straight to marketplace
             logger.info("FB: Loading Marketplace...")
             await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
             await asyncio.sleep(8)
 
-            if "login" in page.url or "checkpoint" in page.url:
-                logger.warning("FB: Session expired, re-logging in")
-                if os.path.exists(SESSION_FILE):
-                    os.remove(SESSION_FILE)
-                if await _do_login(page):
-                    state = await context.storage_state()
-                    with open(SESSION_FILE, "w") as f:
-                        json.dump(state, f)
-                    await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
-                    await asyncio.sleep(8)
+            logger.info(f"FB: URL={page.url}, title={await page.title()}")
 
-            # Save debug screenshot
-            await page.screenshot(path="debug_facebook.png", full_page=False)
-            logger.info(f"FB: page URL = {page.url}")
-            logger.info(f"FB: page title = {await page.title()}")
+            # Handle login redirect
+            if "login" in page.url:
+                logger.warning("FB: Redirected to login - FB blocking headless browser")
+                # Try dismissing login wall by closing dialog
+                for sel in ["[aria-label='Close']", "div[role='dialog'] [aria-label='Close']"]:
+                    try:
+                        btn = page.locator(sel).first
+                        if await btn.is_visible(timeout=3000):
+                            await btn.click()
+                            await asyncio.sleep(2)
+                            break
+                    except Exception:
+                        pass
 
+            # Dismiss other popups
             for sel in ["[aria-label='Close']", "button:has-text('Not now')"]:
                 try:
                     btn = page.locator(sel).first
@@ -139,12 +136,18 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                 except Exception:
                     pass
 
+            # Scroll to load listings
             for _ in range(8):
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await asyncio.sleep(2)
 
+            await page.screenshot(path="debug_facebook.png", full_page=False)
+
             soup = BeautifulSoup(await page.content(), "lxml")
-            cards = soup.select("div[aria-label*='Marketplace item']") or soup.select("a[href*='/marketplace/item/']")
+            cards = (
+                soup.select("div[aria-label*='Marketplace item']") or
+                soup.select("a[href*='/marketplace/item/']")
+            )
             logger.info(f"FB: Found {len(cards)} cards")
 
             seen_ids = set()

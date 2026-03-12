@@ -1,5 +1,5 @@
 """
-Gumtree scraper using Playwright - cars only, no vans.
+Gumtree scraper using Playwright with debug logging.
 """
 import asyncio
 import logging
@@ -18,21 +18,17 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 )
 
-# Words that indicate it's NOT a car
 VAN_KEYWORDS = ["van", "transit", "sprinter", "vivaro", "ducato", "trafic",
-                "pickup", "truck", "tipper", "luton van", "panel van", "minibus"]
+                "pickup", "truck", "tipper", "panel van", "minibus"]
 
 async def _scrape_async(min_price, max_price, min_year, radius_km, location):
     from playwright.async_api import async_playwright
     listings = []
 
-    # Use cars-specific category to avoid vans
     url = (
         "https://www.gumtree.com/search"
-        f"?search_category=cars"
-        f"&search_location={location}"
-        f"&distance={radius_km}"
-        f"&min_price={min_price}&max_price={max_price}"
+        f"?search_category=cars&search_location={location}"
+        f"&distance={radius_km}&min_price={min_price}&max_price={max_price}"
         f"&vehicle_transmission=automatic"
     )
 
@@ -43,89 +39,76 @@ async def _scrape_async(min_price, max_price, min_year, radius_km, location):
         await page.route("**/*.{png,jpg,jpeg,gif,webp,mp4,woff2}", lambda r: r.abort())
 
         try:
-            page_num = 1
-            while page_num <= 5:
-                paged_url = url + f"&page={page_num}"
-                await page.goto(paged_url, timeout=60000, wait_until="domcontentloaded")
-                await asyncio.sleep(3)
+            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            await asyncio.sleep(4)
 
-                soup = BeautifulSoup(await page.content(), "lxml")
-                items = (
-                    soup.select("article.listing-maxi") or
-                    soup.select("li.result-row") or
-                    soup.select("[data-q='search-result']") or
-                    soup.select(".listing-results-row") or
-                    soup.select("div[class*='listing-tile']")
-                )
+            soup = BeautifulSoup(await page.content(), "lxml")
 
-                if not items:
-                    logger.info(f"Gumtree: no results at page {page_num}")
-                    break
+            # Log structure to find selectors
+            logger.info(f"Gumtree: title={await page.title()}")
+            articles = soup.select("article")
+            logger.info(f"Gumtree: found {len(articles)} <article> tags")
+            for i, a in enumerate(articles[:3]):
+                logger.info(f"Gumtree article[{i}]: class={a.get('class')}")
 
-                found_any = False
-                for item in items:
-                    try:
-                        title_el = (
-                            item.select_one("h2") or
-                            item.select_one(".listing-title") or
-                            item.select_one("[class*='title']")
-                        )
-                        price_el = (
-                            item.select_one(".listing-price strong") or
-                            item.select_one("[data-q='price']") or
-                            item.select_one("[class*='price']")
-                        )
-                        link_el = item.select_one("a[href*='/cars/']")
+            items = (
+                soup.select("article.listing-maxi") or
+                soup.select("article[class*='listing']") or
+                soup.select("li[class*='result']") or
+                soup.select("[data-q='search-result']") or
+                soup.select("article")
+            )
 
-                        title = title_el.get_text(strip=True) if title_el else ""
-                        if not title:
-                            continue
+            logger.info(f"Gumtree: matched {len(items)} items")
 
-                        # Skip vans and non-cars
-                        if any(w in title.lower() for w in VAN_KEYWORDS):
-                            logger.debug(f"Gumtree: skipping non-car: {title}")
-                            continue
+            for item in items:
+                try:
+                    title_el = (
+                        item.select_one("h2") or
+                        item.select_one(".listing-title") or
+                        item.select_one("[class*='title']")
+                    )
+                    price_el = (
+                        item.select_one(".listing-price strong") or
+                        item.select_one("[data-q='price']") or
+                        item.select_one("[class*='price']")
+                    )
+                    link_el = item.select_one("a[href*='/cars/']") or item.select_one("a[href]")
 
-                        price_raw = price_el.get_text(strip=True) if price_el else "0"
-                        digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
-                        price = int(digits) if digits else 0
+                    title = title_el.get_text(strip=True) if title_el else ""
+                    if not title:
+                        continue
+                    if any(w in title.lower() for w in VAN_KEYWORDS):
+                        continue
 
-                        # Skip if price out of range (sometimes shows POA etc)
-                        if price and (price < min_price or price > max_price):
-                            continue
+                    price_raw = price_el.get_text(strip=True) if price_el else "0"
+                    digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
+                    price = int(digits) if digits else 0
+                    if price and (price < min_price or price > max_price):
+                        continue
 
-                        href = link_el.get("href", "") if link_el else ""
-                        if not href:
-                            continue
-                        link = href if href.startswith("http") else "https://www.gumtree.com" + href
+                    href = link_el.get("href", "") if link_el else ""
+                    if not href or "/cars/" not in href:
+                        continue
+                    link = href if href.startswith("http") else "https://www.gumtree.com" + href
 
-                        year = _extract_year(title)
-                        if year and year < min_year:
-                            continue
+                    year = _extract_year(title)
+                    if year and year < min_year:
+                        continue
 
-                        id_match = re.search(r'/(\d+)$', link)
-                        lid = id_match.group(1) if id_match else link[-15:]
-                        found_any = True
-                        listings.append({
-                            "id": f"gumtree_{lid}",
-                            "source": "Gumtree",
-                            "title": title,
-                            "price": price,
-                            "specs": "",
-                            "url": link,
-                            "year": year,
-                        })
-                    except Exception as e:
-                        logger.warning(f"Gumtree parse error: {e}")
-
-                if not found_any:
-                    break
-
-                next_btn = soup.select_one("a[aria-label='Next']") or soup.select_one(".pagination-next")
-                if not next_btn:
-                    break
-                page_num += 1
-                await asyncio.sleep(2)
+                    id_match = re.search(r'/(\d+)$', link)
+                    lid = id_match.group(1) if id_match else link[-15:]
+                    listings.append({
+                        "id": f"gumtree_{lid}",
+                        "source": "Gumtree",
+                        "title": title,
+                        "price": price,
+                        "specs": "",
+                        "url": link,
+                        "year": year,
+                    })
+                except Exception as e:
+                    logger.warning(f"Gumtree parse error: {e}")
 
         except Exception as e:
             logger.error(f"Gumtree scrape error: {e}")

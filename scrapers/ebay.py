@@ -1,5 +1,5 @@
 """
-eBay Motors scraper using Playwright headless browser.
+eBay scraper using Playwright with debug logging.
 """
 import asyncio
 import logging
@@ -24,13 +24,9 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
 
     url = (
         "https://www.ebay.co.uk/sch/i.html"
-        f"?_sacat=9801"
-        f"&_udlo={min_price}&_udhi={max_price}"
+        f"?_sacat=9801&_udlo={min_price}&_udhi={max_price}"
         f"&_fpos={postcode.replace(' ', '+')}&_fsradm={radius}"
-        f"&LH_ItemCondition=3000"
-        f"&Cars_Transmission=Automatic"
-        f"&Cars_Type=Car"
-        f"&_sop=10&_ipg=60"
+        f"&LH_ItemCondition=3000&Cars_Transmission=Automatic&_ipg=60"
     )
 
     async with async_playwright() as pw:
@@ -40,70 +36,55 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
         await page.route("**/*.{png,jpg,jpeg,gif,webp,mp4,woff2}", lambda r: r.abort())
 
         try:
-            page_num = 1
-            while page_num <= 3:
-                paged_url = url + f"&_pgn={page_num}"
-                await page.goto(paged_url, timeout=60000, wait_until="domcontentloaded")
-                await asyncio.sleep(3)
+            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            await asyncio.sleep(4)
 
-                soup = BeautifulSoup(await page.content(), "lxml")
-                items = soup.select("li.s-item")
+            soup = BeautifulSoup(await page.content(), "lxml")
 
-                if not items:
-                    logger.info(f"eBay: no results at page {page_num}")
-                    break
+            # Log first few li tags to find correct selector
+            all_lis = soup.select("li[class]")
+            for i, li in enumerate(all_lis[:5]):
+                logger.info(f"eBay li[{i}]: class={li.get('class')}, id={li.get('id')}")
 
-                found_any = False
-                for item in items:
-                    try:
-                        title_el = item.select_one(".s-item__title")
-                        price_el = item.select_one(".s-item__price")
-                        link_el = item.select_one("a.s-item__link")
-                        subtitle_el = item.select_one(".s-item__subtitle")
+            items = soup.select("li.s-item") or soup.select("li[class*='s-item']")
+            logger.info(f"eBay: matched {len(items)} items")
 
-                        title = title_el.get_text(strip=True) if title_el else ""
-                        if not title or title.lower() == "shop on ebay":
-                            continue
+            for item in items:
+                try:
+                    title_el = item.select_one(".s-item__title") or item.select_one("h3")
+                    price_el = item.select_one(".s-item__price")
+                    link_el = item.select_one("a.s-item__link") or item.select_one("a[href*='ebay.co.uk/itm']")
 
-                        # Skip vans/trucks
-                        if any(w in title.lower() for w in ["van", "transit", "sprinter", "truck", "pickup"]):
-                            continue
+                    title = title_el.get_text(strip=True) if title_el else ""
+                    if not title or title.lower() == "shop on ebay":
+                        continue
+                    if any(w in title.lower() for w in ["van", "transit", "sprinter", "pickup"]):
+                        continue
 
-                        price_raw = (price_el.get_text(strip=True) if price_el else "0").split(" to ")[0]
-                        digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
-                        price = int(digits) if digits else 0
+                    price_raw = (price_el.get_text(strip=True) if price_el else "0").split(" to ")[0]
+                    digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
+                    price = int(digits) if digits else 0
 
-                        link = link_el["href"] if link_el else ""
-                        if not link:
-                            continue
+                    link = link_el["href"] if link_el else ""
+                    if not link:
+                        continue
 
-                        subtitle = subtitle_el.get_text(strip=True) if subtitle_el else ""
-                        year = _extract_year(title + subtitle)
-                        if year and year < min_year:
-                            continue
+                    year = _extract_year(title)
+                    if year and year < min_year:
+                        continue
 
-                        lid = link.split("/itm/")[-1].split("?")[0] if "/itm/" in link else link[-20:]
-                        found_any = True
-                        listings.append({
-                            "id": f"ebay_{lid}",
-                            "source": "eBay",
-                            "title": title,
-                            "price": price,
-                            "specs": subtitle,
-                            "url": link,
-                            "year": year,
-                        })
-                    except Exception as e:
-                        logger.warning(f"eBay parse error: {e}")
-
-                if not found_any:
-                    break
-
-                next_btn = soup.select_one("a.pagination__next") or soup.select_one("[aria-label='Next page']")
-                if not next_btn:
-                    break
-                page_num += 1
-                await asyncio.sleep(2)
+                    lid = link.split("/itm/")[-1].split("?")[0] if "/itm/" in link else link[-20:]
+                    listings.append({
+                        "id": f"ebay_{lid}",
+                        "source": "eBay",
+                        "title": title,
+                        "price": price,
+                        "specs": "",
+                        "url": link,
+                        "year": year,
+                    })
+                except Exception as e:
+                    logger.warning(f"eBay parse error: {e}")
 
         except Exception as e:
             logger.error(f"eBay scrape error: {e}")

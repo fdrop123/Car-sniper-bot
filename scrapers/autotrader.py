@@ -1,5 +1,5 @@
 """
-AutoTrader scraper using Playwright with debug logging.
+AutoTrader scraper - uses dynamic class selector sc-1bwnykn-1
 """
 import asyncio
 import logging
@@ -40,53 +40,58 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
             await page.goto(url, timeout=60000, wait_until="domcontentloaded")
             await asyncio.sleep(5)
 
-            await page.screenshot(path="debug_autotrader.png", full_page=False)
-            logger.info(f"AutoTrader: title={await page.title()}, url={page.url}")
-
             soup = BeautifulSoup(await page.content(), "lxml")
 
-            # Log first 5 li tags with their classes and data attributes to find correct selector
-            all_lis = soup.select("li")
-            for i, li in enumerate(all_lis[:10]):
-                attrs = {k: v for k, v in li.attrs.items() if k in ["class", "data-testid", "id"]}
-                logger.info(f"AutoTrader li[{i}]: {attrs}")
+            # AutoTrader uses styled-components with dynamic class names
+            # Select li tags with class starting with 'sc-' which are the listing cards
+            cards = soup.select("li.sc-1bwnykn-1")
 
-            cards = (
-                soup.select("li[data-testid='search-result-with-image']") or
-                soup.select("li[data-testid='search-result']") or
-                soup.select("article.search-result") or
-                soup.select("li.search-result") or
-                soup.select("[data-testid='search-result']") or
-                soup.select("section[data-testid='search-results'] > ul > li") or
-                soup.select("ul[data-testid='search-results'] > li") or
-                soup.select("div[data-testid='search-results'] li")
-            )
+            # Fallback: get all li tags that contain a price and a link
+            if not cards:
+                cards = [
+                    li for li in soup.select("li")
+                    if li.select_one("a[href*='/car-details/']")
+                ]
 
             logger.info(f"AutoTrader: matched {len(cards)} cards")
 
             for card in cards:
                 try:
-                    title_el = card.select_one("h3") or card.select_one("[data-testid='search-result-title']")
-                    price_el = card.select_one("[data-testid='search-result-price']") or card.select_one(".price-section")
-                    link_el = card.select_one("a[href*='/car-details/']") or card.select_one("a[href*='/cars/']")
-
-                    title = title_el.get_text(strip=True) if title_el else ""
-                    if not title:
-                        continue
-                    price_raw = price_el.get_text(strip=True) if price_el else "0"
-                    digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
-                    price = int(digits) if digits else 0
+                    link_el = card.select_one("a[href*='/car-details/']")
                     if not link_el:
                         continue
+
+                    # Get all text elements
+                    texts = [el.get_text(strip=True) for el in card.select("span, h3, p") if el.get_text(strip=True)]
+
+                    # Title is usually the longest text or h3
+                    title_el = card.select_one("h3")
+                    title = title_el.get_text(strip=True) if title_el else ""
+                    if not title:
+                        title = next((t for t in texts if len(t) > 10 and "£" not in t), "")
+
+                    # Price contains £
+                    price = 0
+                    for t in texts:
+                        if "£" in t:
+                            digits = ''.join(filter(str.isdigit, t.split(".")[0]))
+                            if digits:
+                                price = int(digits)
+                                break
+
                     href = link_el.get("href", "")
                     link = "https://www.autotrader.co.uk" + href if href.startswith("/") else href
                     lid = re.sub(r'\?.*', '', link.split("/")[-1])
+
+                    if not title:
+                        continue
+
                     listings.append({
                         "id": f"autotrader_{lid}",
                         "source": "AutoTrader",
                         "title": title,
                         "price": price,
-                        "specs": "",
+                        "specs": " | ".join(texts[:4]),
                         "url": link,
                     })
                 except Exception as e:
