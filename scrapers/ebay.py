@@ -43,12 +43,16 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
             await page.goto(url, timeout=60000, wait_until="networkidle")
             await asyncio.sleep(5)
 
-            # Wait for actual listing items
+            # Save screenshot and HTML for debugging
+            await page.screenshot(path="debug_ebay.png", full_page=False)
+            with open("debug_ebay.html", "w") as f:
+                f.write(await page.content())
+            logger.info(f"eBay: title={await page.title()}, url={page.url}")
+
             try:
-                await page.wait_for_selector("li.s-item", timeout=15000)
+                await page.wait_for_selector("li.s-item", timeout=10000)
             except Exception:
-                logger.info("eBay: waiting for listings...")
-                await asyncio.sleep(5)
+                logger.info("eBay: li.s-item not found, trying with current HTML...")
 
             soup = BeautifulSoup(await page.content(), "lxml")
             items = soup.select("li.s-item")
@@ -93,6 +97,10 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
 
         except Exception as e:
             logger.error(f"eBay scrape error: {e}")
+            try:
+                await page.screenshot(path="debug_ebay.png", full_page=False)
+            except Exception:
+                pass
         finally:
             await browser.close()
 

@@ -44,19 +44,20 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
             await page.goto(url, timeout=60000, wait_until="networkidle")
             await asyncio.sleep(5)
 
-            # Wait for listing items to appear in the DOM
+            # Save screenshot and HTML for debugging
+            await page.screenshot(path="debug_autotrader.png", full_page=False)
+            with open("debug_autotrader.html", "w") as f:
+                f.write(await page.content())
+            logger.info(f"AutoTrader: title={await page.title()}, url={page.url}")
+
             try:
-                await page.wait_for_selector("li.sc-1bwnykn-1", timeout=15000)
+                await page.wait_for_selector("li.sc-1bwnykn-1", timeout=10000)
             except Exception:
-                logger.info("AutoTrader: waiting for any li to load...")
-                await asyncio.sleep(5)
+                logger.info("AutoTrader: sc-1bwnykn-1 not found, trying fallback...")
 
             soup = BeautifulSoup(await page.content(), "lxml")
 
-            # Use the confirmed class from debug logs
             cards = soup.select("li.sc-1bwnykn-1")
-
-            # Fallback: any li containing a car-details link
             if not cards:
                 cards = [li for li in soup.select("li") if li.select_one("a[href*='/car-details/']")]
 
@@ -69,7 +70,6 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
                         continue
 
                     all_text = [el.get_text(strip=True) for el in card.select("h3, span, p, div") if el.get_text(strip=True)]
-
                     title_el = card.select_one("h3")
                     title = title_el.get_text(strip=True) if title_el else next((t for t in all_text if len(t) > 8 and "£" not in t), "")
 
@@ -101,6 +101,10 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
 
         except Exception as e:
             logger.error(f"AutoTrader scrape error: {e}")
+            try:
+                await page.screenshot(path="debug_autotrader.png", full_page=False)
+            except Exception:
+                pass
         finally:
             await browser.close()
 
