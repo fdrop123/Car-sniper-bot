@@ -1,5 +1,5 @@
 """
-eBay scraper using Playwright with debug logging.
+eBay scraper - waits for JS-rendered results and uses networkidle.
 """
 import asyncio
 import logging
@@ -31,22 +31,27 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=BROWSER_ARGS)
-        context = await browser.new_context(user_agent=USER_AGENT, viewport={"width": 1280, "height": 800}, locale="en-GB")
+        context = await browser.new_context(
+            user_agent=USER_AGENT,
+            viewport={"width": 1280, "height": 800},
+            locale="en-GB",
+        )
         page = await context.new_page()
         await page.route("**/*.{png,jpg,jpeg,gif,webp,mp4,woff2}", lambda r: r.abort())
 
         try:
-            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            await asyncio.sleep(4)
+            await page.goto(url, timeout=60000, wait_until="networkidle")
+            await asyncio.sleep(5)
+
+            # Wait for actual listing items
+            try:
+                await page.wait_for_selector("li.s-item", timeout=15000)
+            except Exception:
+                logger.info("eBay: waiting for listings...")
+                await asyncio.sleep(5)
 
             soup = BeautifulSoup(await page.content(), "lxml")
-
-            # Log first few li tags to find correct selector
-            all_lis = soup.select("li[class]")
-            for i, li in enumerate(all_lis[:5]):
-                logger.info(f"eBay li[{i}]: class={li.get('class')}, id={li.get('id')}")
-
-            items = soup.select("li.s-item") or soup.select("li[class*='s-item']")
+            items = soup.select("li.s-item")
             logger.info(f"eBay: matched {len(items)} items")
 
             for item in items:
@@ -62,7 +67,7 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
                         continue
 
                     price_raw = (price_el.get_text(strip=True) if price_el else "0").split(" to ")[0]
-                    digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
+                    digits = ''.join(filter(str.isdigit, price_raw.replace(",", "").split(".")[0]))
                     price = int(digits) if digits else 0
 
                     link = link_el["href"] if link_el else ""
