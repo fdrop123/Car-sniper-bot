@@ -1,0 +1,89 @@
+name: Car Scraper Bot
+
+on:
+  schedule:
+    # Run every 3 hours (adjust as needed)
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Sources to scrape (space-separated)"
+        default: "autotrader ebay gumtree facebook"
+        required: false
+      dry_run:
+        description: "Dry run (no Telegram notifications)"
+        type: boolean
+        default: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore seen listings cache
+        uses: actions/cache@v4
+        with:
+          path: seen_listings.json
+          key: seen-listings-${{ github.run_id }}
+          restore-keys: |
+            seen-listings-
+
+      - name: Restore Facebook session cache
+        uses: actions/cache@v4
+        with:
+          path: fb_session.json
+          key: fb-session-${{ github.run_id }}
+          restore-keys: |
+            fb-session-
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: |
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
+
+      - name: Run car scraper
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FACEBOOK_EMAIL: ${{ secrets.FACEBOOK_EMAIL }}
+          FACEBOOK_PASSWORD: ${{ secrets.FACEBOOK_PASSWORD }}
+          MIN_PRICE: "300"
+          MAX_PRICE: "1500"
+          MIN_YEAR: "2006"
+          RADIUS_MILES: "60"
+          POSTCODE: "LU1 1AA"
+          LOCATION: "luton"
+        run: |
+          SOURCES="${{ github.event.inputs.sources || 'autotrader ebay gumtree facebook' }}"
+          DRY_RUN_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          python main.py --sources $SOURCES $DRY_RUN_FLAG
+
+      - name: Upload seen listings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seen-listings-${{ github.run_number }}
+          path: seen_listings.json
+          retention-days: 30
