@@ -1,9 +1,10 @@
 """
-AutoTrader scraper using Playwright headless browser to bypass IP blocking.
+AutoTrader scraper using Playwright with debug screenshot.
 """
 import asyncio
 import logging
 import re
+import os
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,6 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
         f"&postcode={postcode.replace(' ', '%20')}"
         f"&price-from={min_price}&price-to={max_price}"
         f"&year-from={min_year}&transmission=Automatic"
-        f"&body-type=Hatchback,Saloon,Estate,Coupe,Convertible,MPV,SUV"
     )
 
     async with async_playwright() as pw:
@@ -38,59 +38,61 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
         await page.route("**/*.{png,jpg,jpeg,gif,webp,mp4,woff2}", lambda r: r.abort())
 
         try:
-            page_num = 1
-            while True:
-                await page.goto(url + f"&page={page_num}", timeout=60000, wait_until="domcontentloaded")
-                await asyncio.sleep(3)
+            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            await asyncio.sleep(5)
 
-                soup = BeautifulSoup(await page.content(), "lxml")
-                cards = (
-                    soup.select("li[data-testid='search-result-with-image']") or
-                    soup.select("article.search-result") or
-                    soup.select("li.search-result")
-                )
+            # Save screenshot and HTML for debugging
+            await page.screenshot(path="debug_autotrader.png", full_page=False)
+            with open("debug_autotrader.html", "w") as f:
+                f.write(await page.content())
+            logger.info(f"AutoTrader: page title = {await page.title()}")
+            logger.info(f"AutoTrader: URL after load = {page.url}")
 
-                if not cards:
-                    logger.info(f"AutoTrader: no results at page {page_num}")
-                    break
+            soup = BeautifulSoup(await page.content(), "lxml")
 
-                for card in cards:
-                    try:
-                        title_el = card.select_one("h3") or card.select_one("[data-testid='search-result-title']")
-                        price_el = card.select_one("[data-testid='search-result-price']") or card.select_one(".price-section")
-                        specs_el = card.select_one("[data-testid='search-result-specs']")
-                        link_el = card.select_one("a[href*='/car-details/']")
+            # Log all unique tag+class combos to find correct selectors
+            all_articles = soup.select("article")
+            all_lis = soup.select("li[class]")
+            logger.info(f"AutoTrader: found {len(all_articles)} <article> tags, {len(all_lis)} <li> tags")
 
-                        title = title_el.get_text(strip=True) if title_el else ""
-                        if not title:
-                            continue
+            cards = (
+                soup.select("li[data-testid='search-result-with-image']") or
+                soup.select("li[data-testid='search-result']") or
+                soup.select("article.search-result") or
+                soup.select("li.search-result") or
+                soup.select("[data-testid='search-result']") or
+                soup.select("section[data-testid='search-results'] > ul > li")
+            )
 
-                        price_raw = price_el.get_text(strip=True) if price_el else "0"
-                        digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
-                        price = int(digits) if digits else 0
+            logger.info(f"AutoTrader: matched {len(cards)} cards")
 
-                        specs = specs_el.get_text(strip=True) if specs_el else ""
-                        if not link_el:
-                            continue
-                        link = "https://www.autotrader.co.uk" + link_el["href"]
-                        lid = re.sub(r'\?.*', '', link.split("/")[-1])
+            for card in cards:
+                try:
+                    title_el = card.select_one("h3") or card.select_one("[data-testid='search-result-title']")
+                    price_el = card.select_one("[data-testid='search-result-price']") or card.select_one(".price-section")
+                    link_el = card.select_one("a[href*='/car-details/']") or card.select_one("a[href*='/cars/']")
 
-                        listings.append({
-                            "id": f"autotrader_{lid}",
-                            "source": "AutoTrader",
-                            "title": title,
-                            "price": price,
-                            "specs": specs,
-                            "url": link,
-                        })
-                    except Exception as e:
-                        logger.warning(f"AutoTrader parse error: {e}")
-
-                next_btn = soup.select_one("a[data-testid='pagination-next']") or soup.select_one("a[rel='next']")
-                if not next_btn or page_num >= 3:
-                    break
-                page_num += 1
-                await asyncio.sleep(2)
+                    title = title_el.get_text(strip=True) if title_el else ""
+                    if not title:
+                        continue
+                    price_raw = price_el.get_text(strip=True) if price_el else "0"
+                    digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
+                    price = int(digits) if digits else 0
+                    if not link_el:
+                        continue
+                    href = link_el.get("href", "")
+                    link = "https://www.autotrader.co.uk" + href if href.startswith("/") else href
+                    lid = re.sub(r'\?.*', '', link.split("/")[-1])
+                    listings.append({
+                        "id": f"autotrader_{lid}",
+                        "source": "AutoTrader",
+                        "title": title,
+                        "price": price,
+                        "specs": "",
+                        "url": link,
+                    })
+                except Exception as e:
+                    logger.warning(f"AutoTrader parse error: {e}")
 
         except Exception as e:
             logger.error(f"AutoTrader scrape error: {e}")
