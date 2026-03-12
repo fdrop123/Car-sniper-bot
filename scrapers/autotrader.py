@@ -1,10 +1,9 @@
 """
-AutoTrader scraper using Playwright with debug screenshot.
+AutoTrader scraper using Playwright with debug logging.
 """
 import asyncio
 import logging
 import re
-import os
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
@@ -41,19 +40,16 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
             await page.goto(url, timeout=60000, wait_until="domcontentloaded")
             await asyncio.sleep(5)
 
-            # Save screenshot and HTML for debugging
             await page.screenshot(path="debug_autotrader.png", full_page=False)
-            with open("debug_autotrader.html", "w") as f:
-                f.write(await page.content())
-            logger.info(f"AutoTrader: page title = {await page.title()}")
-            logger.info(f"AutoTrader: URL after load = {page.url}")
+            logger.info(f"AutoTrader: title={await page.title()}, url={page.url}")
 
             soup = BeautifulSoup(await page.content(), "lxml")
 
-            # Log all unique tag+class combos to find correct selectors
-            all_articles = soup.select("article")
-            all_lis = soup.select("li[class]")
-            logger.info(f"AutoTrader: found {len(all_articles)} <article> tags, {len(all_lis)} <li> tags")
+            # Log first 5 li tags with their classes and data attributes to find correct selector
+            all_lis = soup.select("li")
+            for i, li in enumerate(all_lis[:10]):
+                attrs = {k: v for k, v in li.attrs.items() if k in ["class", "data-testid", "id"]}
+                logger.info(f"AutoTrader li[{i}]: {attrs}")
 
             cards = (
                 soup.select("li[data-testid='search-result-with-image']") or
@@ -61,7 +57,9 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
                 soup.select("article.search-result") or
                 soup.select("li.search-result") or
                 soup.select("[data-testid='search-result']") or
-                soup.select("section[data-testid='search-results'] > ul > li")
+                soup.select("section[data-testid='search-results'] > ul > li") or
+                soup.select("ul[data-testid='search-results'] > li") or
+                soup.select("div[data-testid='search-results'] li")
             )
 
             logger.info(f"AutoTrader: matched {len(cards)} cards")

@@ -35,7 +35,9 @@ async def _do_login(page):
     try:
         logger.info("FB: Logging in...")
         await page.goto("https://www.facebook.com/login", timeout=60000, wait_until="domcontentloaded")
-        await asyncio.sleep(5)
+        await asyncio.sleep(6)
+
+        # Accept cookies
         for sel in ["button:has-text('Accept all')", "button:has-text('Allow all cookies')", "[data-cookiebanner='accept_button']"]:
             try:
                 btn = page.locator(sel).first
@@ -45,7 +47,14 @@ async def _do_login(page):
                     break
             except Exception:
                 pass
-        await page.wait_for_selector("#email", timeout=15000)
+
+        # Wait for either email field or already logged in
+        try:
+            await page.wait_for_selector("#email", timeout=20000)
+        except Exception:
+            logger.info("FB: Email field not found - may already be logged in or blocked")
+            return False
+
         await page.fill("#email", FB_EMAIL)
         await asyncio.sleep(1)
         await page.fill("#pass", FB_PASSWORD)
@@ -115,6 +124,11 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                         json.dump(state, f)
                     await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
                     await asyncio.sleep(8)
+
+            # Save debug screenshot
+            await page.screenshot(path="debug_facebook.png", full_page=False)
+            logger.info(f"FB: page URL = {page.url}")
+            logger.info(f"FB: page title = {await page.title()}")
 
             for sel in ["[aria-label='Close']", "button:has-text('Not now')"]:
                 try:
