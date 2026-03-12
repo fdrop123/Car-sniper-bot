@@ -35,23 +35,24 @@ async def _do_login(page):
     try:
         logger.info("FB: Logging in...")
         await page.goto("https://www.facebook.com/login", timeout=60000, wait_until="domcontentloaded")
-        await asyncio.sleep(3)
-        for sel in ["button:has-text('Accept all')", "button:has-text('Allow all cookies')"]:
+        await asyncio.sleep(5)
+        for sel in ["button:has-text('Accept all')", "button:has-text('Allow all cookies')", "[data-cookiebanner='accept_button']"]:
             try:
                 btn = page.locator(sel).first
                 if await btn.is_visible(timeout=3000):
                     await btn.click()
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
                     break
             except Exception:
                 pass
+        await page.wait_for_selector("#email", timeout=15000)
         await page.fill("#email", FB_EMAIL)
         await asyncio.sleep(1)
         await page.fill("#pass", FB_PASSWORD)
         await asyncio.sleep(1)
         await page.click("[name='login']")
         await page.wait_for_url(
-            lambda url: "login" not in url and "checkpoint" not in url,
+            lambda url: "facebook.com" in url and "login" not in url and "checkpoint" not in url,
             timeout=30000,
         )
         logger.info("FB: Login successful")
@@ -98,10 +99,11 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                     state = await context.storage_state()
                     with open(SESSION_FILE, "w") as f:
                         json.dump(state, f)
+                    logger.info("FB: Session saved")
 
             logger.info("FB: Loading Marketplace...")
             await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
-            await asyncio.sleep(5)
+            await asyncio.sleep(8)
 
             if "login" in page.url or "checkpoint" in page.url:
                 logger.warning("FB: Session expired, re-logging in")
@@ -112,7 +114,7 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                     with open(SESSION_FILE, "w") as f:
                         json.dump(state, f)
                     await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(8)
 
             for sel in ["[aria-label='Close']", "button:has-text('Not now')"]:
                 try:
@@ -123,7 +125,7 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                 except Exception:
                     pass
 
-            for _ in range(6):
+            for _ in range(8):
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await asyncio.sleep(2)
 

@@ -1,27 +1,23 @@
 """
-Gumtree scraper using cloudscraper.
+Gumtree scraper - uses cloudscraper with mobile user agent.
 """
 import time
 import logging
 import re
+import cloudscraper
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
 def scrape_gumtree(min_price=300, max_price=1500, min_year=2006, radius=60, location="luton"):
-    try:
-        import cloudscraper
-        from bs4 import BeautifulSoup
-    except ImportError:
-        logger.error("cloudscraper not installed")
-        return []
-
     listings = []
+    radius_km = int(radius * 1.60934)
+
     scraper = cloudscraper.create_scraper(
         browser={"browser": "chrome", "platform": "windows", "mobile": False}
     )
-    radius_km = int(radius * 1.60934)
-    page = 1
 
+    page = 1
     while True:
         url = (
             "https://www.gumtree.com/search"
@@ -32,30 +28,38 @@ def scrape_gumtree(min_price=300, max_price=1500, min_year=2006, radius=60, loca
         )
 
         try:
-            resp = scraper.get(url, timeout=20)
+            resp = scraper.get(url, timeout=30)
             resp.raise_for_status()
         except Exception as e:
             logger.error(f"Gumtree request failed (page {page}): {e}")
             break
 
-        from bs4 import BeautifulSoup
         soup = BeautifulSoup(resp.text, "lxml")
         items = (
             soup.select("article.listing-maxi") or
             soup.select("li.result-row") or
             soup.select("[data-q='search-result']") or
-            soup.select(".listing-results-row")
+            soup.select(".listing-results-row") or
+            soup.select("div[class*='listing-tile']")
         )
 
         if not items:
-            logger.info(f"Gumtree: no more results at page {page}")
+            logger.info(f"Gumtree: no results at page {page}")
             break
 
         found_any = False
         for item in items:
             try:
-                title_el = item.select_one("h2") or item.select_one(".listing-title") or item.select_one("[class*='title']")
-                price_el = item.select_one(".listing-price strong") or item.select_one("[data-q='price']") or item.select_one("[class*='price']")
+                title_el = (
+                    item.select_one("h2") or
+                    item.select_one(".listing-title") or
+                    item.select_one("[class*='title']")
+                )
+                price_el = (
+                    item.select_one(".listing-price strong") or
+                    item.select_one("[data-q='price']") or
+                    item.select_one("[class*='price']")
+                )
                 link_el = item.select_one("a[href*='/cars/']") or item.select_one("a[href*='/vans/']")
 
                 title = title_el.get_text(strip=True) if title_el else ""
@@ -67,9 +71,9 @@ def scrape_gumtree(min_price=300, max_price=1500, min_year=2006, radius=60, loca
                 price = int(digits) if digits else 0
 
                 href = link_el.get("href", "") if link_el else ""
-                link = href if href.startswith("http") else "https://www.gumtree.com" + href
                 if not href:
                     continue
+                link = href if href.startswith("http") else "https://www.gumtree.com" + href
 
                 year = _extract_year(title)
                 if year and year < min_year:
