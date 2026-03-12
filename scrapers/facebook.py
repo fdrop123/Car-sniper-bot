@@ -1,6 +1,6 @@
 """
-Facebook Marketplace scraper - skips login, goes straight to marketplace.
-FB blocks headless login so we browse as guest and scrape visible listings.
+Facebook Marketplace scraper.
+FB requires login - uses credentials from secrets.
 """
 import asyncio
 import logging
@@ -20,6 +20,7 @@ BROWSER_ARGS = [
     "--no-sandbox", "--disable-setuid-sandbox",
     "--disable-blink-features=AutomationControlled",
     "--disable-dev-shm-usage", "--disable-gpu",
+    "--window-size=1280,800",
 ]
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -29,44 +30,88 @@ USER_AGENT = (
 def _session_exists():
     return os.path.exists(SESSION_FILE) and os.path.getsize(SESSION_FILE) > 100
 
-async def _do_login(page):
-    if not FB_EMAIL or not FB_PASSWORD:
-        return False
+async def _do_login(browser):
+    """Open a fresh page and log in to Facebook"""
+    context = await browser.new_context(
+        user_agent=USER_AGENT,
+        viewport={"width": 1280, "height": 800},
+        locale="en-GB",
+    )
+    page = await context.new_page()
     try:
-        logger.info("FB: Logging in...")
-        await page.goto("https://www.facebook.com/login", timeout=60000, wait_until="domcontentloaded")
-        await asyncio.sleep(6)
+        logger.info("FB: Going to facebook.com...")
+        await page.goto("https://www.facebook.com", timeout=60000, wait_until="domcontentloaded")
+        await asyncio.sleep(5)
 
-        for sel in ["button:has-text('Accept all')", "button:has-text('Allow all cookies')"]:
+        # Accept cookies
+        for sel in [
+            "button:has-text('Accept all')",
+            "button:has-text('Allow all cookies')",
+            "[data-cookiebanner='accept_button']",
+            "button:has-text('Only allow essential cookies')",
+        ]:
             try:
                 btn = page.locator(sel).first
-                if await btn.is_visible(timeout=3000):
+                if await btn.is_visible(timeout=2000):
                     await btn.click()
                     await asyncio.sleep(2)
                     break
             except Exception:
                 pass
 
-        # Try to fill login - if field not visible, skip
+        logger.info(f"FB login page: {page.url}")
+
+        # Look for login form or already logged in
+        email_visible = False
         try:
-            await page.wait_for_selector("#email", timeout=20000)
-            await page.fill("#email", FB_EMAIL)
-            await asyncio.sleep(1)
-            await page.fill("#pass", FB_PASSWORD)
-            await asyncio.sleep(1)
-            await page.click("[name='login']")
-            await page.wait_for_url(
-                lambda url: "facebook.com" in url and "login" not in url and "checkpoint" not in url,
-                timeout=30000,
-            )
-            logger.info("FB: Login successful")
-            return True
-        except Exception as e:
-            logger.warning(f"FB: Login form not available: {e}")
-            return False
+            await page.wait_for_selector("input[name='email']", timeout=10000)
+            email_visible = True
+        except Exception:
+            pass
+
+        if not email_visible:
+            # Try navigating to login directly
+            await page.goto("https://www.facebook.com/login", timeout=60000, wait_until="domcontentloaded")
+            await asyncio.sleep(5)
+            try:
+                await page.wait_for_selector("input[name='email']", timeout=10000)
+                email_visible = True
+            except Exception:
+                pass
+
+        if not email_visible:
+            logger.error("FB: Cannot find login form")
+            await page.screenshot(path="debug_fb_login.png")
+            await context.close()
+            return None
+
+        logger.info("FB: Filling login form...")
+        await page.fill("input[name='email']", FB_EMAIL)
+        await asyncio.sleep(1)
+        await page.fill("input[name='pass']", FB_PASSWORD)
+        await asyncio.sleep(1)
+        await page.click("button[name='login']")
+        await asyncio.sleep(5)
+
+        logger.info(f"FB: After login URL = {page.url}")
+
+        if "login" in page.url or "checkpoint" in page.url:
+            logger.warning("FB: Login failed or checkpoint triggered")
+            await page.screenshot(path="debug_fb_login.png")
+            await context.close()
+            return None
+
+        logger.info("FB: Login successful!")
+        state = await context.storage_state()
+        with open(SESSION_FILE, "w") as f:
+            json.dump(state, f)
+        logger.info("FB: Session saved")
+        return state
+
     except Exception as e:
         logger.error(f"FB: Login error: {e}")
-        return False
+        await context.close()
+        return None
 
 async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_km=97):
     from playwright.async_api import async_playwright
@@ -82,51 +127,51 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=BROWSER_ARGS)
-        ctx_opts = dict(user_agent=USER_AGENT, viewport={"width": 1280, "height": 800}, locale="en-GB")
 
+        # Try to get a valid session
+        storage_state = None
         if _session_exists():
             try:
                 with open(SESSION_FILE) as f:
-                    ctx_opts["storage_state"] = json.load(f)
+                    storage_state = json.load(f)
                 logger.info("FB: Loaded saved session")
             except Exception:
                 pass
 
-        context = await browser.new_context(**ctx_opts)
+        if not storage_state and FB_EMAIL:
+            storage_state = await _do_login(browser)
+
+        if not storage_state:
+            logger.warning("FB: No session available - skipping")
+            await browser.close()
+            return []
+
+        # Browse marketplace with session
+        context = await browser.new_context(
+            user_agent=USER_AGENT,
+            viewport={"width": 1280, "height": 800},
+            locale="en-GB",
+            storage_state=storage_state,
+        )
         page = await context.new_page()
         await page.route("**/*.{png,jpg,jpeg,gif,webp,mp4,woff2}", lambda r: r.abort())
 
         try:
-            # Try login if no session
-            if not _session_exists() and FB_EMAIL:
-                if await _do_login(page):
-                    state = await context.storage_state()
-                    with open(SESSION_FILE, "w") as f:
-                        json.dump(state, f)
-                    logger.info("FB: Session saved")
-
-            # Go straight to marketplace
             logger.info("FB: Loading Marketplace...")
             await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
             await asyncio.sleep(8)
 
             logger.info(f"FB: URL={page.url}, title={await page.title()}")
 
-            # Handle login redirect
+            # If redirected to login, session expired
             if "login" in page.url:
-                logger.warning("FB: Redirected to login - FB blocking headless browser")
-                # Try dismissing login wall by closing dialog
-                for sel in ["[aria-label='Close']", "div[role='dialog'] [aria-label='Close']"]:
-                    try:
-                        btn = page.locator(sel).first
-                        if await btn.is_visible(timeout=3000):
-                            await btn.click()
-                            await asyncio.sleep(2)
-                            break
-                    except Exception:
-                        pass
+                logger.warning("FB: Session expired")
+                if os.path.exists(SESSION_FILE):
+                    os.remove(SESSION_FILE)
+                await browser.close()
+                return []
 
-            # Dismiss other popups
+            # Dismiss popups
             for sel in ["[aria-label='Close']", "button:has-text('Not now')"]:
                 try:
                     btn = page.locator(sel).first
@@ -136,7 +181,6 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                 except Exception:
                     pass
 
-            # Scroll to load listings
             for _ in range(8):
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await asyncio.sleep(2)

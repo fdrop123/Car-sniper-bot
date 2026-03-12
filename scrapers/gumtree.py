@@ -1,5 +1,5 @@
 """
-Gumtree scraper using Playwright with debug logging.
+Gumtree scraper - cars only, no vans.
 """
 import asyncio
 import logging
@@ -43,22 +43,12 @@ async def _scrape_async(min_price, max_price, min_year, radius_km, location):
             await asyncio.sleep(4)
 
             soup = BeautifulSoup(await page.content(), "lxml")
-
-            # Log structure to find selectors
-            logger.info(f"Gumtree: title={await page.title()}")
-            articles = soup.select("article")
-            logger.info(f"Gumtree: found {len(articles)} <article> tags")
-            for i, a in enumerate(articles[:3]):
-                logger.info(f"Gumtree article[{i}]: class={a.get('class')}")
-
             items = (
                 soup.select("article.listing-maxi") or
                 soup.select("article[class*='listing']") or
-                soup.select("li[class*='result']") or
                 soup.select("[data-q='search-result']") or
                 soup.select("article")
             )
-
             logger.info(f"Gumtree: matched {len(items)} items")
 
             for item in items:
@@ -73,7 +63,8 @@ async def _scrape_async(min_price, max_price, min_year, radius_km, location):
                         item.select_one("[data-q='price']") or
                         item.select_one("[class*='price']")
                     )
-                    link_el = item.select_one("a[href*='/cars/']") or item.select_one("a[href]")
+                    # Get ANY link from the item, not just /cars/
+                    link_el = item.select_one("a[href]")
 
                     title = title_el.get_text(strip=True) if title_el else ""
                     if not title:
@@ -88,9 +79,14 @@ async def _scrape_async(min_price, max_price, min_year, radius_km, location):
                         continue
 
                     href = link_el.get("href", "") if link_el else ""
-                    if not href or "/cars/" not in href:
+                    if not href:
                         continue
                     link = href if href.startswith("http") else "https://www.gumtree.com" + href
+
+                    # Skip non-listing links
+                    if any(x in link for x in ["gumtree.com/p/", "gumtree.com/cars"]) is False:
+                        if "gumtree.com" not in link:
+                            continue
 
                     year = _extract_year(title)
                     if year and year < min_year:
