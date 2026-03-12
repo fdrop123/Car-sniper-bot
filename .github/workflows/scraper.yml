@@ -2,8 +2,7 @@ name: Car Scraper Bot
 
 on:
   schedule:
-    # Run every 3 hours (adjust as needed)
-    - cron: "0 */3 * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       sources:
@@ -21,12 +20,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # ── 1. Checkout repo ────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 2. Restore seen-listings cache ──────────────────────────────
-      # Persists seen_listings.json between runs to avoid duplicate alerts.
       - name: Restore seen listings cache
         uses: actions/cache@v4
         with:
@@ -35,10 +31,6 @@ jobs:
           restore-keys: |
             seen-listings-
 
-      # ── 2b. Restore Facebook session cache ───────────────────────────
-      # Caches the Playwright browser session (cookies) so FB only needs
-      # to log in once. If the session expires, the scraper re-logs in
-      # automatically and saves a fresh session for the next run.
       - name: Restore Facebook session cache
         uses: actions/cache@v4
         with:
@@ -47,7 +39,6 @@ jobs:
           restore-keys: |
             fb-session-
 
-      # ── 3. Python setup ─────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -63,13 +54,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 4. Install Playwright + Chromium (for FB Marketplace) ───────
       - name: Install Playwright browsers
         run: |
           python -m playwright install chromium
-          python -m playwright install-deps chromium
+          sudo apt-get install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64
 
-      # ── 5. Run scraper ───────────────────────────────────────────────
       - name: Run car scraper
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -90,7 +79,6 @@ jobs:
           fi
           python main.py --sources $SOURCES $DRY_RUN_FLAG
 
-      # ── 6. Upload seen_listings.json as artifact (backup) ────────────
       - name: Upload seen listings artifact
         if: always()
         uses: actions/upload-artifact@v4
