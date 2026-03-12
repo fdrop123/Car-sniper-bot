@@ -1,53 +1,43 @@
 """
-eBay Motors scraper - searches for automatic cars near Luton
+eBay Motors scraper using cloudscraper.
 """
-import requests
 import time
 import logging
 import re
-from bs4 import BeautifulSoup
-from fake_useragent import UserAgent
 
 logger = logging.getLogger(__name__)
 
-def get_headers():
-    ua = UserAgent()
-    return {
-        "User-Agent": ua.random,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-GB,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-    }
-
 def scrape_ebay(min_price=300, max_price=1500, min_year=2006, radius=60, postcode="LU1 1AA"):
-    """Scrape eBay Motors for automatic cars near Luton"""
+    try:
+        import cloudscraper
+        from bs4 import BeautifulSoup
+    except ImportError:
+        logger.error("cloudscraper not installed")
+        return []
+
     listings = []
+    scraper = cloudscraper.create_scraper(
+        browser={"browser": "chrome", "platform": "windows", "mobile": False}
+    )
     page = 1
 
     while True:
-        # eBay UK Cars category with transmission filter
         url = (
-            f"https://www.ebay.co.uk/sch/i.html"
-            f"?_sacat=9801"
-            f"&_udlo={min_price}"
-            f"&_udhi={max_price}"
-            f"&_fpos={postcode.replace(' ', '+')}"
-            f"&_fsradm={radius}"
-            f"&LH_ItemCondition=3000"
-            f"&_pgn={page}"
-            f"&_ipg=60"
-            f"&Cars_Transmission=Automatic"
-            f"&_sop=10"
+            "https://www.ebay.co.uk/sch/i.html"
+            f"?_sacat=9801&_udlo={min_price}&_udhi={max_price}"
+            f"&_fpos={postcode.replace(' ', '+')}&_fsradm={radius}"
+            f"&LH_ItemCondition=3000&_pgn={page}&_ipg=60"
+            f"&Cars_Transmission=Automatic&_sop=10"
         )
 
         try:
-            resp = requests.get(url, headers=get_headers(), timeout=15)
+            resp = scraper.get(url, timeout=20)
             resp.raise_for_status()
         except Exception as e:
             logger.error(f"eBay request failed (page {page}): {e}")
             break
 
+        from bs4 import BeautifulSoup
         soup = BeautifulSoup(resp.text, "lxml")
         items = soup.select("li.s-item")
 
@@ -66,8 +56,7 @@ def scrape_ebay(min_price=300, max_price=1500, min_year=2006, radius=60, postcod
                 if not title or title.lower() == "shop on ebay":
                     continue
 
-                price_raw = price_el.get_text(strip=True) if price_el else "£0"
-                price_raw = price_raw.split(" to ")[0]
+                price_raw = (price_el.get_text(strip=True) if price_el else "0").split(" to ")[0]
                 digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
                 price = int(digits) if digits else 0
 
@@ -79,11 +68,10 @@ def scrape_ebay(min_price=300, max_price=1500, min_year=2006, radius=60, postcod
                 if year and year < min_year:
                     continue
 
-                listing_id = link.split("/itm/")[-1].split("?")[0] if "/itm/" in link else link[-20:]
+                lid = link.split("/itm/")[-1].split("?")[0] if "/itm/" in link else link[-20:]
                 found_any = True
-
                 listings.append({
-                    "id": f"ebay_{listing_id}",
+                    "id": f"ebay_{lid}",
                     "source": "eBay",
                     "title": title,
                     "price": price,
@@ -92,7 +80,7 @@ def scrape_ebay(min_price=300, max_price=1500, min_year=2006, radius=60, postcod
                     "year": year,
                 })
             except Exception as e:
-                logger.warning(f"eBay: failed to parse item: {e}")
+                logger.warning(f"eBay parse error: {e}")
 
         if not found_any or page >= 5:
             break
@@ -100,7 +88,6 @@ def scrape_ebay(min_price=300, max_price=1500, min_year=2006, radius=60, postcod
         next_btn = soup.select_one("a.pagination__next") or soup.select_one("[aria-label='Next page']")
         if not next_btn:
             break
-
         page += 1
         time.sleep(2)
 

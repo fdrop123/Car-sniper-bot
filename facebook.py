@@ -11,23 +11,18 @@ logger = logging.getLogger(__name__)
 
 LUTON_LAT = 51.8787
 LUTON_LON = -0.4200
-
 FB_EMAIL = os.environ.get("FACEBOOK_EMAIL", "")
 FB_PASSWORD = os.environ.get("FACEBOOK_PASSWORD", "")
 SESSION_FILE = os.environ.get("FB_SESSION_FILE", "fb_session.json")
 
 BROWSER_ARGS = [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
+    "--no-sandbox", "--disable-setuid-sandbox",
     "--disable-blink-features=AutomationControlled",
-    "--disable-dev-shm-usage",
-    "--disable-gpu",
+    "--disable-dev-shm-usage", "--disable-gpu",
 ]
-
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/121.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 )
 
 def _session_exists():
@@ -41,23 +36,20 @@ async def _do_login(page):
         logger.info("FB: Logging in...")
         await page.goto("https://www.facebook.com/login", timeout=60000, wait_until="domcontentloaded")
         await asyncio.sleep(3)
-
-        for selector in ["button:has-text('Accept all')", "button:has-text('Allow all cookies')"]:
+        for sel in ["button:has-text('Accept all')", "button:has-text('Allow all cookies')"]:
             try:
-                btn = page.locator(selector).first
+                btn = page.locator(sel).first
                 if await btn.is_visible(timeout=3000):
                     await btn.click()
                     await asyncio.sleep(1)
                     break
             except Exception:
                 pass
-
         await page.fill("#email", FB_EMAIL)
         await asyncio.sleep(1)
         await page.fill("#pass", FB_PASSWORD)
         await asyncio.sleep(1)
         await page.click("[name='login']")
-
         await page.wait_for_url(
             lambda url: "login" not in url and "checkpoint" not in url,
             timeout=30000,
@@ -86,17 +78,17 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=BROWSER_ARGS)
-        context_options = dict(user_agent=USER_AGENT, viewport={"width": 1280, "height": 800}, locale="en-GB")
+        ctx_opts = dict(user_agent=USER_AGENT, viewport={"width": 1280, "height": 800}, locale="en-GB")
 
         if _session_exists():
             try:
                 with open(SESSION_FILE) as f:
-                    context_options["storage_state"] = json.load(f)
+                    ctx_opts["storage_state"] = json.load(f)
                 logger.info("FB: Loaded saved session")
             except Exception:
                 pass
 
-        context = await browser.new_context(**context_options)
+        context = await browser.new_context(**ctx_opts)
         page = await context.new_page()
         await page.route("**/*.{png,jpg,jpeg,gif,webp,mp4,woff2}", lambda r: r.abort())
 
@@ -122,17 +114,15 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                     await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
                     await asyncio.sleep(5)
 
-            # Dismiss popups
-            for selector in ["[aria-label='Close']", "button:has-text('Not now')"]:
+            for sel in ["[aria-label='Close']", "button:has-text('Not now')"]:
                 try:
-                    btn = page.locator(selector).first
+                    btn = page.locator(sel).first
                     if await btn.is_visible(timeout=2000):
                         await btn.click()
                         await asyncio.sleep(1)
                 except Exception:
                     pass
 
-            # Scroll to load listings
             for _ in range(6):
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await asyncio.sleep(2)
@@ -156,7 +146,6 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                     if item_id in seen_ids:
                         continue
                     seen_ids.add(item_id)
-
                     texts = [el.get_text(strip=True) for el in card.select("span") if el.get_text(strip=True)]
                     price, title = 0, ""
                     for t in texts:
@@ -165,7 +154,6 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                             price = int(d) if d else 0
                         elif len(t) > 5 and not t.startswith("£") and not title:
                             title = t
-
                     listings.append({
                         "id": f"fb_{item_id}",
                         "source": "Facebook Marketplace",
@@ -176,7 +164,7 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
                         "year": _extract_year(" ".join(texts)),
                     })
                 except Exception as e:
-                    logger.warning(f"FB: card parse error: {e}")
+                    logger.warning(f"FB card parse error: {e}")
 
         except Exception as e:
             logger.error(f"FB scrape error: {e}")
