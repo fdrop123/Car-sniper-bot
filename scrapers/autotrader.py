@@ -1,127 +1,109 @@
 """
-AutoTrader scraper using their internal search API endpoint.
+AutoTrader scraper using Playwright headless browser to bypass IP blocking.
 """
-import time
+import asyncio
 import logging
 import re
-import requests
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-def scrape_autotrader(min_price=300, max_price=1500, min_year=2006, radius=60, postcode="LU1 1AA"):
+BROWSER_ARGS = [
+    "--no-sandbox", "--disable-setuid-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-dev-shm-usage", "--disable-gpu",
+]
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+)
+
+async def _scrape_async(min_price, max_price, min_year, radius, postcode):
+    from playwright.async_api import async_playwright
     listings = []
 
-    # AutoTrader's internal API used by their own frontend
-    url = "https://www.autotrader.co.uk/at-gateway?query=SearchResultsPage"
+    url = (
+        "https://www.autotrader.co.uk/car-search"
+        f"?sort=relevance&radius={radius}"
+        f"&postcode={postcode.replace(' ', '%20')}"
+        f"&price-from={min_price}&price-to={max_price}"
+        f"&year-from={min_year}&transmission=Automatic"
+        f"&body-type=Hatchback,Saloon,Estate,Coupe,Convertible,MPV,SUV"
+    )
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-        "Accept": "application/json",
-        "Accept-Language": "en-GB,en;q=0.9",
-        "Origin": "https://www.autotrader.co.uk",
-        "Referer": "https://www.autotrader.co.uk/",
-        "Content-Type": "application/json",
-    }
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True, args=BROWSER_ARGS)
+        context = await browser.new_context(user_agent=USER_AGENT, viewport={"width": 1280, "height": 800}, locale="en-GB")
+        page = await context.new_page()
+        await page.route("**/*.{png,jpg,jpeg,gif,webp,mp4,woff2}", lambda r: r.abort())
 
-    payload = {
-        "operationName": "SearchResultsPage",
-        "variables": {
-            "filters": {
-                "postcode": postcode,
-                "radius": str(radius),
-                "priceFrom": str(min_price),
-                "priceTo": str(max_price),
-                "yearFrom": str(min_year),
-                "transmission": ["Automatic"],
-                "condition": ["Used"],
-            },
-            "page": 1,
-            "pageSize": 100,
-            "sortOrder": "relevance",
-        },
-        "query": """
-        query SearchResultsPage($filters: SearchFilters, $page: Int, $pageSize: Int, $sortOrder: String) {
-          search(filters: $filters, page: $page, pageSize: $pageSize, sortOrder: $sortOrder) {
-            results {
-              id title price year mileage transmission url
-            }
-            totalResults
-          }
-        }
-        """
-    }
+        try:
+            page_num = 1
+            while True:
+                await page.goto(url + f"&page={page_num}", timeout=60000, wait_until="domcontentloaded")
+                await asyncio.sleep(3)
 
-    try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=20)
-        if resp.status_code == 200:
-            data = resp.json()
-            results = data.get("data", {}).get("search", {}).get("results", [])
-            for r in results:
-                listings.append({
-                    "id": f"autotrader_{r.get('id', '')}",
-                    "source": "AutoTrader",
-                    "title": r.get("title", "Unknown"),
-                    "price": r.get("price", 0),
-                    "specs": f"{r.get('year', '')} • {r.get('mileage', '')} miles • {r.get('transmission', '')}",
-                    "url": f"https://www.autotrader.co.uk{r.get('url', '')}",
-                })
-    except Exception as e:
-        logger.error(f"AutoTrader API failed: {e}")
+                soup = BeautifulSoup(await page.content(), "lxml")
+                cards = (
+                    soup.select("li[data-testid='search-result-with-image']") or
+                    soup.select("article.search-result") or
+                    soup.select("li.search-result")
+                )
 
-    # Fallback: try mobile site
-    if not listings:
-        listings = _scrape_autotrader_mobile(min_price, max_price, min_year, radius, postcode)
+                if not cards:
+                    logger.info(f"AutoTrader: no results at page {page_num}")
+                    break
 
-    logger.info(f"AutoTrader: found {len(listings)} listings")
+                for card in cards:
+                    try:
+                        title_el = card.select_one("h3") or card.select_one("[data-testid='search-result-title']")
+                        price_el = card.select_one("[data-testid='search-result-price']") or card.select_one(".price-section")
+                        specs_el = card.select_one("[data-testid='search-result-specs']")
+                        link_el = card.select_one("a[href*='/car-details/']")
+
+                        title = title_el.get_text(strip=True) if title_el else ""
+                        if not title:
+                            continue
+
+                        price_raw = price_el.get_text(strip=True) if price_el else "0"
+                        digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
+                        price = int(digits) if digits else 0
+
+                        specs = specs_el.get_text(strip=True) if specs_el else ""
+                        if not link_el:
+                            continue
+                        link = "https://www.autotrader.co.uk" + link_el["href"]
+                        lid = re.sub(r'\?.*', '', link.split("/")[-1])
+
+                        listings.append({
+                            "id": f"autotrader_{lid}",
+                            "source": "AutoTrader",
+                            "title": title,
+                            "price": price,
+                            "specs": specs,
+                            "url": link,
+                        })
+                    except Exception as e:
+                        logger.warning(f"AutoTrader parse error: {e}")
+
+                next_btn = soup.select_one("a[data-testid='pagination-next']") or soup.select_one("a[rel='next']")
+                if not next_btn or page_num >= 3:
+                    break
+                page_num += 1
+                await asyncio.sleep(2)
+
+        except Exception as e:
+            logger.error(f"AutoTrader scrape error: {e}")
+        finally:
+            await browser.close()
+
     return listings
 
-
-def _scrape_autotrader_mobile(min_price, max_price, min_year, radius, postcode):
-    """Fallback mobile scraper"""
-    listings = []
+def scrape_autotrader(min_price=300, max_price=1500, min_year=2006, radius=60, postcode="LU1 1AA"):
     try:
-        import cloudscraper
-        from bs4 import BeautifulSoup
-        scraper = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "mobile": False}
-        )
-        url = (
-            "https://www.autotrader.co.uk/car-search"
-            f"?sort=relevance&radius={radius}"
-            f"&postcode={postcode.replace(' ', '%20')}"
-            f"&price-from={min_price}&price-to={max_price}"
-            f"&year-from={min_year}&transmission=Automatic"
-        )
-        resp = scraper.get(url, timeout=30)
-        soup = BeautifulSoup(resp.text, "lxml")
-        cards = (
-            soup.select("li[data-testid='search-result-with-image']") or
-            soup.select("article.search-result") or
-            soup.select("li.search-result")
-        )
-        for card in cards:
-            try:
-                title_el = card.select_one("h3") or card.select_one("[data-testid='search-result-title']")
-                price_el = card.select_one("[data-testid='search-result-price']") or card.select_one(".price-section")
-                link_el = card.select_one("a[href*='/car-details/']")
-                title = title_el.get_text(strip=True) if title_el else "Unknown"
-                price_raw = price_el.get_text(strip=True) if price_el else "0"
-                digits = ''.join(filter(str.isdigit, price_raw.split(".")[0]))
-                price = int(digits) if digits else 0
-                if not link_el:
-                    continue
-                link = "https://www.autotrader.co.uk" + link_el["href"]
-                lid = re.sub(r'\?.*', '', link.split("/")[-1])
-                listings.append({
-                    "id": f"autotrader_{lid}",
-                    "source": "AutoTrader",
-                    "title": title,
-                    "price": price,
-                    "specs": "",
-                    "url": link,
-                })
-            except Exception:
-                pass
+        listings = asyncio.run(_scrape_async(min_price, max_price, min_year, radius, postcode))
     except Exception as e:
-        logger.error(f"AutoTrader mobile fallback failed: {e}")
+        logger.error(f"AutoTrader scraper failed: {e}")
+        listings = []
+    logger.info(f"AutoTrader: found {len(listings)} listings")
     return listings
