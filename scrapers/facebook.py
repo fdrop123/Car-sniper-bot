@@ -1,5 +1,5 @@
 """
-Facebook Marketplace scraper with fixed login button selector.
+Facebook Marketplace scraper - uses Enter key to submit login.
 """
 import asyncio
 import logging
@@ -40,7 +40,6 @@ async def _do_login(browser):
         await page.goto("https://www.facebook.com", timeout=60000, wait_until="networkidle")
         await asyncio.sleep(4)
 
-        # Accept cookies
         for sel in ["button:has-text('Accept all')", "button:has-text('Allow all cookies')"]:
             try:
                 btn = page.locator(sel).first
@@ -51,7 +50,6 @@ async def _do_login(browser):
             except Exception:
                 pass
 
-        # Wait for email field
         try:
             await page.wait_for_selector("input[name='email']", timeout=15000)
         except Exception:
@@ -66,32 +64,11 @@ async def _do_login(browser):
         await page.fill("input[name='pass']", FB_PASSWORD)
         await asyncio.sleep(1)
 
-        # Try multiple button selectors
-        clicked = False
-        for sel in [
-            "input[type='submit'][value='Log In']",
-            "input[name='login']",
-            "button[type='submit']",
-            "[data-testid='royal_login_button']",
-            "button:has-text('Log in')",
-        ]:
-            try:
-                btn = page.locator(sel).first
-                if await btn.is_visible(timeout=2000):
-                    await btn.click()
-                    clicked = True
-                    logger.info(f"FB: Clicked login with selector: {sel}")
-                    break
-            except Exception:
-                continue
+        # Press Enter to submit instead of finding the button
+        await page.keyboard.press("Enter")
+        logger.info("FB: Pressed Enter to submit login")
+        await asyncio.sleep(10)
 
-        if not clicked:
-            logger.error("FB: Could not find login button")
-            await page.screenshot(path="debug_fb_login.png")
-            await context.close()
-            return None
-
-        await asyncio.sleep(8)
         logger.info(f"FB: After login URL = {page.url}")
 
         if "login" in page.url or "checkpoint" in page.url:
