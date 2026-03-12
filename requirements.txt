@@ -8,3 +8,4 @@ lxml==5.1.0
 fake-useragent==1.4.0
 tinydb==4.8.0
 schedule==1.2.1
+cloudscraper==1.2.71
