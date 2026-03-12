@@ -79,6 +79,16 @@ jobs:
           fi
           python main.py --sources $SOURCES $DRY_RUN_FLAG
 
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots-${{ github.run_number }}
+          path: |
+            debug_*.png
+            debug_*.html
+          retention-days: 3
+
       - name: Upload seen listings artifact
         if: always()
         uses: actions/upload-artifact@v4
