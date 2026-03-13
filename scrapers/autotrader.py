@@ -44,7 +44,6 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
             await page.goto(url, timeout=60000, wait_until="networkidle")
             await asyncio.sleep(5)
 
-            # Save screenshot and HTML for debugging
             await page.screenshot(path="debug_autotrader.png", full_page=False)
             with open("debug_autotrader.html", "w") as f:
                 f.write(await page.content())
@@ -56,7 +55,6 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
                 logger.info("AutoTrader: sc-1bwnykn-1 not found, trying fallback...")
 
             soup = BeautifulSoup(await page.content(), "lxml")
-
             cards = soup.select("li.sc-1bwnykn-1")
             if not cards:
                 cards = [li for li in soup.select("li") if li.select_one("a[href*='/car-details/']")]
@@ -68,11 +66,9 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
                     link_el = card.select_one("a[href*='/car-details/']")
                     if not link_el:
                         continue
-
                     all_text = [el.get_text(strip=True) for el in card.select("h3, span, p, div") if el.get_text(strip=True)]
                     title_el = card.select_one("h3")
                     title = title_el.get_text(strip=True) if title_el else next((t for t in all_text if len(t) > 8 and "£" not in t), "")
-
                     price = 0
                     for t in all_text:
                         if "£" in t:
@@ -80,14 +76,11 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
                             if digits and len(digits) <= 6:
                                 price = int(digits)
                                 break
-
                     href = link_el.get("href", "")
                     link = "https://www.autotrader.co.uk" + href if href.startswith("/") else href
                     lid = re.sub(r'\?.*', '', link.split("/")[-1])
-
                     if not title:
                         continue
-
                     listings.append({
                         "id": f"autotrader_{lid}",
                         "source": "AutoTrader",

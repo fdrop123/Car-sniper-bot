@@ -1,5 +1,5 @@
 """
-eBay scraper - waits for JS-rendered results and uses networkidle.
+eBay scraper - dismisses cookie banner before scraping.
 """
 import asyncio
 import logging
@@ -40,19 +40,28 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
         await page.route("**/*.{png,jpg,jpeg,gif,webp,mp4,woff2}", lambda r: r.abort())
 
         try:
-            await page.goto(url, timeout=60000, wait_until="networkidle")
-            await asyncio.sleep(5)
+            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            await asyncio.sleep(4)
 
-            # Save screenshot and HTML for debugging
+            for sel in [
+                "button:has-text('Accept all')",
+                "button:has-text('Accept All')",
+                "#gdpr-banner-accept",
+                "button[id*='accept']",
+            ]:
+                try:
+                    btn = page.locator(sel).first
+                    if await btn.is_visible(timeout=3000):
+                        await btn.click()
+                        logger.info(f"eBay: dismissed cookie banner")
+                        await asyncio.sleep(2)
+                        break
+                except Exception:
+                    pass
+
+            await asyncio.sleep(3)
             await page.screenshot(path="debug_ebay.png", full_page=False)
-            with open("debug_ebay.html", "w") as f:
-                f.write(await page.content())
             logger.info(f"eBay: title={await page.title()}, url={page.url}")
-
-            try:
-                await page.wait_for_selector("li.s-item", timeout=10000)
-            except Exception:
-                logger.info("eBay: li.s-item not found, trying with current HTML...")
 
             soup = BeautifulSoup(await page.content(), "lxml")
             items = soup.select("li.s-item")
@@ -97,10 +106,6 @@ async def _scrape_async(min_price, max_price, min_year, radius, postcode):
 
         except Exception as e:
             logger.error(f"eBay scrape error: {e}")
-            try:
-                await page.screenshot(path="debug_ebay.png", full_page=False)
-            except Exception:
-                pass
         finally:
             await browser.close()
 

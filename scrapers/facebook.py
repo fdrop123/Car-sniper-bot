@@ -1,11 +1,15 @@
 """
-Facebook Marketplace scraper - uses Enter key to submit login.
+Facebook Marketplace scraper.
+- Logs in once and saves session
+- Reuses session on subsequent runs
+- Only re-logs in if session is older than 20 hours or invalid
 """
 import asyncio
 import logging
 import re
 import os
 import json
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +18,7 @@ LUTON_LON = -0.4200
 FB_EMAIL = os.environ.get("FACEBOOK_EMAIL", "")
 FB_PASSWORD = os.environ.get("FACEBOOK_PASSWORD", "")
 SESSION_FILE = os.environ.get("FB_SESSION_FILE", "fb_session.json")
+SESSION_MAX_AGE_HOURS = 20
 
 BROWSER_ARGS = [
     "--no-sandbox", "--disable-setuid-sandbox",
@@ -25,8 +30,20 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
 )
 
-def _session_exists():
-    return os.path.exists(SESSION_FILE) and os.path.getsize(SESSION_FILE) > 100
+def _session_valid():
+    if not os.path.exists(SESSION_FILE):
+        return False
+    if os.path.getsize(SESSION_FILE) < 100:
+        return False
+    age_hours = (time.time() - os.path.getmtime(SESSION_FILE)) / 3600
+    if age_hours > SESSION_MAX_AGE_HOURS:
+        logger.info(f"FB: Session is {age_hours:.1f} hours old - will re-login")
+        return False
+    logger.info(f"FB: Session is {age_hours:.1f} hours old - reusing")
+    return True
+
+def _is_bad_url(url):
+    return any(x in url for x in ["login", "checkpoint", "two_step_verification", "verify"])
 
 async def _do_login(browser):
     context = await browser.new_context(
@@ -36,7 +53,7 @@ async def _do_login(browser):
     )
     page = await context.new_page()
     try:
-        logger.info("FB: Going to facebook.com...")
+        logger.info("FB: Logging in (once per 20 hours)...")
         await page.goto("https://www.facebook.com", timeout=60000, wait_until="networkidle")
         await asyncio.sleep(4)
 
@@ -58,30 +75,26 @@ async def _do_login(browser):
             await context.close()
             return None
 
-        logger.info("FB: Filling login form...")
         await page.fill("input[name='email']", FB_EMAIL)
         await asyncio.sleep(1)
         await page.fill("input[name='pass']", FB_PASSWORD)
         await asyncio.sleep(1)
-
-        # Press Enter to submit instead of finding the button
         await page.keyboard.press("Enter")
-        logger.info("FB: Pressed Enter to submit login")
         await asyncio.sleep(10)
 
-        logger.info(f"FB: After login URL = {page.url}")
+        current_url = page.url
+        logger.info(f"FB: After login URL = {current_url}")
 
-        if "login" in page.url or "checkpoint" in page.url:
-            logger.warning("FB: Login failed or checkpoint")
+        if _is_bad_url(current_url):
+            logger.warning("FB: Login blocked by Facebook security check - only works from home IP")
             await page.screenshot(path="debug_fb_login.png")
             await context.close()
             return None
 
-        logger.info("FB: Login successful!")
+        logger.info("FB: Login successful! Session saved for 20 hours.")
         state = await context.storage_state()
         with open(SESSION_FILE, "w") as f:
             json.dump(state, f)
-        logger.info("FB: Session saved")
         await context.close()
         return state
 
@@ -110,11 +123,10 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
         browser = await pw.chromium.launch(headless=True, args=BROWSER_ARGS)
 
         storage_state = None
-        if _session_exists():
+        if _session_valid():
             try:
                 with open(SESSION_FILE) as f:
                     storage_state = json.load(f)
-                logger.info("FB: Loaded saved session")
             except Exception:
                 pass
 
@@ -122,7 +134,7 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
             storage_state = await _do_login(browser)
 
         if not storage_state:
-            logger.warning("FB: No session - skipping")
+            logger.warning("FB: No valid session - skipping Facebook this run")
             await browser.close()
             return []
 
@@ -140,10 +152,10 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
             await page.goto(search_url, timeout=60000, wait_until="domcontentloaded")
             await asyncio.sleep(8)
 
-            logger.info(f"FB: URL={page.url}, title={await page.title()}")
+            logger.info(f"FB: URL={page.url}")
 
-            if "login" in page.url:
-                logger.warning("FB: Session expired - deleting")
+            if _is_bad_url(page.url):
+                logger.warning("FB: Session expired - will re-login next run")
                 if os.path.exists(SESSION_FILE):
                     os.remove(SESSION_FILE)
                 await browser.close()
@@ -161,8 +173,6 @@ async def _scrape_fb_async(min_price=300, max_price=1500, min_year=2006, radius_
             for _ in range(8):
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await asyncio.sleep(2)
-
-            await page.screenshot(path="debug_facebook.png", full_page=False)
 
             soup = BeautifulSoup(await page.content(), "lxml")
             cards = (

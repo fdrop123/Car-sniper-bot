@@ -63,7 +63,6 @@ async def _scrape_async(min_price, max_price, min_year, radius_km, location):
                         item.select_one("[data-q='price']") or
                         item.select_one("[class*='price']")
                     )
-                    # Get ANY link from the item, not just /cars/
                     link_el = item.select_one("a[href]")
 
                     title = title_el.get_text(strip=True) if title_el else ""
@@ -83,7 +82,6 @@ async def _scrape_async(min_price, max_price, min_year, radius_km, location):
                         continue
                     link = href if href.startswith("http") else "https://www.gumtree.com" + href
 
-                    # Skip non-listing links
                     if any(x in link for x in ["gumtree.com/p/", "gumtree.com/cars"]) is False:
                         if "gumtree.com" not in link:
                             continue
