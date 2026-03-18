@@ -27,7 +27,14 @@ _HEADERS = {
     "Accept-Language": "en-GB,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.autotrader.co.uk/",
-    "DNT": "1",
+    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "same-origin",
+    "sec-fetch-user": "?1",
+    "upgrade-insecure-requests": "1",
 }
 
 
@@ -39,7 +46,7 @@ def _get(session: requests.Session, url: str) -> requests.Response | None:
             return resp
         except requests.RequestException as exc:
             wait = 3 * (attempt + 1)
-            logger.warning(f"AutoTrader GET attempt {attempt + 1} failed ({exc}); retrying in {wait}s…")
+            logger.warning(f"AutoTrader GET attempt {attempt + 1} failed ({exc}); retrying in {wait}s...")
             if attempt < 2:
                 time.sleep(wait)
     return None
@@ -71,8 +78,6 @@ def _extract_from_next_data(data: dict) -> list[dict]:
             year  = ad.get("year", "")
             title = " ".join(filter(None, [str(year), make, model, deriv])).strip()
             price = ad.get("price") or ad.get("advertisedPrice") or 0
-
-            # Some versions nest price
             if isinstance(price, dict):
                 price = price.get("amount", 0)
 
@@ -98,7 +103,6 @@ def _extract_from_next_data(data: dict) -> list[dict]:
 def _extract_from_html(soup: BeautifulSoup) -> list[dict]:
     """Fallback HTML parsing when __NEXT_DATA__ doesn't have adverts."""
     listings: list[dict] = []
-    # AutoTrader cards use various class names; try several selectors
     cards = (
         soup.select("li[data-standout-type]")
         or soup.select("article[data-advert-card]")
@@ -115,23 +119,15 @@ def _extract_from_html(soup: BeautifulSoup) -> list[dict]:
             advert_id = re.search(r"/car-details/([^/?#]+)", href)
             advert_id = advert_id.group(1) if advert_id else href
 
-            title_el = (
-                card.select_one("h3")
-                or card.select_one("[class*='title']")
-                or card.select_one("[data-testid='search-listing-title']")
-            )
-            price_el = (
-                card.select_one("[data-testid='search-listing-price']")
-                or card.select_one("[class*='price']")
-            )
-            year_el = card.select_one("[class*='year'], [data-testid*='year']")
+            title_el  = card.select_one("h3") or card.select_one("[class*='title']")
+            price_el  = card.select_one("[data-testid='search-listing-price']") or card.select_one("[class*='price']")
+            year_el   = card.select_one("[class*='year'], [data-testid*='year']")
             mileage_el = card.select_one("[class*='mileage'], [data-testid*='mileage']")
 
-            title  = title_el.get_text(strip=True) if title_el else "Unknown"
-            price  = _parse_price(price_el.get_text()) if price_el else None
-            year   = year_el.get_text(strip=True) if year_el else None
+            title   = title_el.get_text(strip=True) if title_el else "Unknown"
+            price   = _parse_price(price_el.get_text()) if price_el else None
+            year    = year_el.get_text(strip=True) if year_el else None
             mileage = mileage_el.get_text(strip=True) if mileage_el else None
-
             full_url = f"{_BASE_URL}{href}" if href.startswith("/") else href
 
             listings.append({
@@ -167,12 +163,18 @@ def scrape_autotrader(
         f"&price-to={max_price}"
         "&transmission=Automatic"
         "&sort=price-asc"
-        "&advertising-location=at_cars"
     )
 
     listings: list[dict] = []
     seen_ids: set[str] = set()
     session = requests.Session()
+
+    # Visit homepage first to pick up cookies — helps avoid 403s
+    try:
+        session.get(_BASE_URL, headers=_HEADERS, timeout=10)
+        time.sleep(1)
+    except Exception:
+        pass
 
     for page in range(1, max_pages + 1):
         url = f"{base_url}&page={page}"
@@ -183,16 +185,14 @@ def scrape_autotrader(
 
         soup = BeautifulSoup(resp.text, "lxml")
 
-        # Primary: extract from __NEXT_DATA__
-        next_data_tag = soup.find("script", id="__NEXT_DATA__")
         page_listings: list[dict] = []
+        next_data_tag = soup.find("script", id="__NEXT_DATA__")
         if next_data_tag and next_data_tag.string:
             try:
                 page_listings = _extract_from_next_data(json.loads(next_data_tag.string))
             except json.JSONDecodeError:
                 pass
 
-        # Fallback: parse HTML
         if not page_listings:
             page_listings = _extract_from_html(soup)
 
@@ -205,7 +205,6 @@ def scrape_autotrader(
                 seen_ids.add(l["id"])
                 listings.append(l)
 
-        # Stop if AutoTrader shows no next page
         has_next = bool(
             soup.select_one("a[aria-label='Next']")
             or soup.select_one("[data-testid='pagination-next']")
