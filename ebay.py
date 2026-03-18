@@ -37,7 +37,7 @@ def _get(session: requests.Session, url: str) -> requests.Response | None:
             return resp
         except requests.RequestException as exc:
             wait = 3 * (attempt + 1)
-            logger.warning(f"eBay GET attempt {attempt + 1} failed ({exc}); retrying in {wait}s…")
+            logger.warning(f"eBay GET attempt {attempt + 1} failed ({exc}); retrying in {wait}s...")
             if attempt < 2:
                 time.sleep(wait)
     return None
@@ -49,7 +49,6 @@ def _parse_price(text: str) -> int | None:
 
 
 def _parse_year(title: str) -> str | None:
-    """Try to extract a year (2000–2029) from a listing title."""
     match = re.search(r"\b(200[0-9]|201[0-9]|202[0-9])\b", title)
     return match.group(1) if match else None
 
@@ -59,31 +58,20 @@ def _parse_mileage(text: str) -> str | None:
     return f"{match.group(1)} mi" if match else None
 
 
-def _build_search_url(
-    postcode: str,
-    radius_km: int,
-    min_price: int,
-    max_price: int,
-    min_year: int,
-    page: int,
-) -> str:
-    # eBay UK radius is in miles; their internal param uses km but accepts miles too
-    # LH_PrefLoc=1 = UK only; _stpos = postcode for proximity
-    postcode_enc = postcode.replace(" ", "+")
+def _build_search_url(postcode: str, radius: int, min_price: int, max_price: int, page: int) -> str:
+    postcode_enc = postcode.replace(" ", "")
     return (
         f"{_BASE_URL}/sch/i.html"
         f"?_sacat={_CARS_CATEGORY}"
         f"&_nkw=automatic+car"
         f"&_udlo={min_price}"
         f"&_udhi={max_price}"
-        f"&LH_BIN=1"           # Buy It Now only (filters out bids on wrecks)
-        f"&LH_ItemCondition=3000"  # Used
-        f"&LH_PrefLoc=1"       # UK only
+        f"&LH_BIN=1"
+        f"&LH_PrefLoc=1"
         f"&_stpos={postcode_enc}"
-        f"&_radius={radius_km}"
-        f"&Year={min_year}--"  # Year range filter (min_year onwards)
+        f"&_radius={radius}"
         f"&_pgn={page}"
-        f"&_ipg=60"            # 60 results per page
+        f"&_ipg=60"
         f"&rt=nc"
     )
 
@@ -102,7 +90,7 @@ def scrape_ebay(
     session = requests.Session()
 
     for page in range(1, max_pages + 1):
-        url = _build_search_url(postcode, radius, min_price, max_price, min_year, page)
+        url = _build_search_url(postcode, radius, min_price, max_price, page)
         logger.debug(f"  eBay page {page}: {url}")
         resp = _get(session, url)
         if not resp:
@@ -110,7 +98,6 @@ def scrape_ebay(
 
         soup = BeautifulSoup(resp.text, "lxml")
 
-        # eBay's search result items
         items = soup.select("li.s-item:not(.s-item--placeholder)")
         if not items:
             break
@@ -118,7 +105,6 @@ def scrape_ebay(
         new_on_page = 0
         for item in items:
             try:
-                # Link & ID
                 link = item.select_one("a.s-item__link")
                 if not link:
                     continue
@@ -132,28 +118,21 @@ def scrape_ebay(
                     continue
                 seen_ids.add(item_id)
 
-                # Title
                 title_el = item.select_one(".s-item__title")
                 title = title_el.get_text(strip=True) if title_el else "Unknown"
                 if "Shop on eBay" in title:
-                    continue  # Skip promo items
+                    continue
 
-                # Price
                 price_el = item.select_one(".s-item__price")
                 price = _parse_price(price_el.get_text()) if price_el else None
 
-                # Mileage from subtitle / condition
                 sub_el = item.select_one(".s-item__subtitle, .s-item__condition")
                 mileage = _parse_mileage(sub_el.get_text()) if sub_el else None
 
-                # Location
                 location_el = item.select_one(".s-item__location")
                 location = location_el.get_text(strip=True).replace("From ", "") if location_el else None
 
-                # Year from title
                 year = _parse_year(title)
-
-                # Skip listings outside our year range
                 if year and int(year) < min_year:
                     continue
 
@@ -175,7 +154,6 @@ def scrape_ebay(
         if new_on_page == 0:
             break
 
-        # Check for next page
         next_btn = soup.select_one("a.pagination__next, a[aria-label='Next page']")
         if not next_btn:
             break

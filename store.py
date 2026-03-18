@@ -62,7 +62,7 @@ def _prune(store: dict) -> dict:
     cutoff = datetime.now(tz=timezone.utc) - timedelta(days=MAX_AGE_DAYS)
     pruned = {
         k: v for k, v in store.items()
-        if v is None or datetime.fromisoformat(v) >= cutoff
+        if not isinstance(v, str) or datetime.fromisoformat(v) >= cutoff
     }
     removed = len(store) - len(pruned)
     if removed:
