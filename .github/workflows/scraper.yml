@@ -1,98 +1,98 @@
-name: Car Scraper Bot
+name: Car Sniper Bot
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    # Run every 5 minutes (GitHub Actions minimum interval)
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       sources:
         description: "Sources to scrape (space-separated)"
-        default: "autotrader ebay gumtree facebook"
         required: false
+        default: "autotrader ebay gumtree"
       dry_run:
         description: "Dry run (no Telegram notifications)"
         type: boolean
+        required: false
         default: false
+
+env:
+  MIN_PRICE:     "300"
+  MAX_PRICE:     "1500"
+  MIN_YEAR:      "2006"
+  RADIUS_MILES:  "60"
+  POSTCODE:      "LU1 1AA"
+  LOCATION:      "luton"
+  MAX_PAGES:     "5"
+  STORE_MAX_AGE_DAYS: "90"
 
 jobs:
   scrape:
+    name: Scrape & notify
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Restore seen listings cache
-        uses: actions/cache@v4
-        with:
-          path: seen_listings.json
-          key: seen-listings-${{ github.run_id }}
-          restore-keys: |
-            seen-listings-
-
-      - name: Restore Facebook session cache
-        uses: actions/cache@v4
-        with:
-          path: fb_session.json
-          key: fb-session-${{ github.run_id }}
-          restore-keys: |
-            fb-session-
-
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: pip-
+          python-version: "3.12"
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Install Playwright browsers
-        run: |
-          python -m playwright install chromium
-          sudo apt-get install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64
+      # Cache the seen_listings.json between runs so we never re-notify
+      - name: Restore seen-listings cache
+        uses: actions/cache@v4
+        with:
+          path: seen_listings.json
+          key: seen-listings-${{ github.ref_name }}
+          restore-keys: seen-listings-
 
-      - name: Run car scraper
+      - name: Run scraper (scheduled)
+        if: github.event_name == 'schedule'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FACEBOOK_EMAIL: ${{ secrets.FACEBOOK_EMAIL }}
-          FACEBOOK_PASSWORD: ${{ secrets.FACEBOOK_PASSWORD }}
-          MIN_PRICE: "300"
-          MAX_PRICE: "1500"
-          MIN_YEAR: "2006"
-          RADIUS_MILES: "60"
-          POSTCODE: "LU1 1AA"
-          LOCATION: "luton"
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          MIN_PRICE:          ${{ env.MIN_PRICE }}
+          MAX_PRICE:          ${{ env.MAX_PRICE }}
+          MIN_YEAR:           ${{ env.MIN_YEAR }}
+          RADIUS_MILES:       ${{ env.RADIUS_MILES }}
+          POSTCODE:           ${{ env.POSTCODE }}
+          LOCATION:           ${{ env.LOCATION }}
+          MAX_PAGES:          ${{ env.MAX_PAGES }}
+          STORE_MAX_AGE_DAYS: ${{ env.STORE_MAX_AGE_DAYS }}
         run: |
-          SOURCES="${{ github.event.inputs.sources || 'autotrader ebay gumtree facebook' }}"
-          DRY_RUN_FLAG=""
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-          python main.py --sources $SOURCES $DRY_RUN_FLAG
+          python main.py \
+            --sources autotrader ebay gumtree \
+            --no-empty-summary
 
-      - name: Upload debug screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots-${{ github.run_number }}
-          path: |
-            debug_*.png
-            debug_*.html
-          retention-days: 3
+      - name: Run scraper (manual trigger)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          MIN_PRICE:          ${{ env.MIN_PRICE }}
+          MAX_PRICE:          ${{ env.MAX_PRICE }}
+          MIN_YEAR:           ${{ env.MIN_YEAR }}
+          RADIUS_MILES:       ${{ env.RADIUS_MILES }}
+          POSTCODE:           ${{ env.POSTCODE }}
+          LOCATION:           ${{ env.LOCATION }}
+          MAX_PAGES:          ${{ env.MAX_PAGES }}
+          STORE_MAX_AGE_DAYS: ${{ env.STORE_MAX_AGE_DAYS }}
+        run: |
+          python main.py \
+            --sources ${{ github.event.inputs.sources || 'autotrader ebay gumtree' }} \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
 
-      - name: Upload seen listings artifact
+      # Always save the updated cache even if the scraper partially fails
+      - name: Save seen-listings cache
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/cache@v4
         with:
-          name: seen-listings-${{ github.run_number }}
           path: seen_listings.json
-          retention-days: 30
+          key: seen-listings-${{ github.ref_name }}-${{ github.run_id }}
